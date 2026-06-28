@@ -1,0 +1,10 @@
+.git
+__pycache__
+*.pyc
+*.pyo
+.env
+*.sqlite
+data/
+README.md
+Dockerfile
+.dockerignore

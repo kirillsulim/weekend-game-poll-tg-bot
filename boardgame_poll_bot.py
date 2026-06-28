@@ -62,10 +62,11 @@ async def send_weekly_poll(context: ContextTypes.DEFAULT_TYPE):
     chat_id = context.job.chat_id
     saturday, sunday = get_upcoming_weekend_dates()
     options = [
-        f"Saturday, {saturday.isoformat()}",
-        f"Sunday, {sunday.isoformat()}",
+        f"️Суббота, {saturday.isoformat()}",
+        f"Воскресенье, {sunday.isoformat()}",
+        f"Пас",
     ]
-    question = "Board games this weekend? Which day(s) can you make it?"
+    question = "Играем на этой неделе?"
     await context.bot.send_poll(
         chat_id=chat_id,
         question=question,
@@ -90,7 +91,7 @@ async def enable_weekly(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Schedule the job (Monday 12:00 UTC)
     context.job_queue.run_daily(
         callback=send_weekly_poll,
-        time=time(hour=12, minute=0, tzinfo=timezone.utc),
+        time=get_poll_time(),
         days=(0,),
         chat_id=chat_id,
         name=f"weekly_poll_{chat_id}",
@@ -99,7 +100,7 @@ async def enable_weekly(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Persist to database
     save_weekly_chat(chat_id)
     await update.message.reply_text(
-        "✅ Weekly poll enabled! Every Monday at 12:00 UTC a poll will be created for the upcoming weekend."
+        "✅ Расписашка включена! Каждый понедельник в 12:00 бот будет создавать опрос на выходные."
     )
 
 # --------------------------------------------
@@ -129,7 +130,7 @@ def get_date_options(args: list[str]) -> list[str]:
 async def poll_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     options = get_date_options(context.args)
-    question = "On which date(s) can you meet for board games?"
+    question = "Играем?"
     await context.bot.send_poll(
         chat_id=chat_id,
         question=question,
@@ -148,13 +149,16 @@ async def restore_weekly_jobs(application: Application):
         # Avoid duplicates if a job was already added (shouldn’t happen)
         application.job_queue.run_daily(
             callback=send_weekly_poll,
-            time=time(hour=12, minute=0, tzinfo=timezone.utc),
+            time=get_poll_time(),
             days=(0,),
             chat_id=chat_id,
             name=f"weekly_poll_{chat_id}",
         )
     if chat_ids:
         print(f"Restored weekly polls for {len(chat_ids)} chat(s).")
+
+def get_poll_time() -> time:
+    return time(hour=12, minute=0, tzinfo=timezone(timedelta(hours=5)))
 
 # --------------------------------------------
 # Main

@@ -11,13 +11,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Create a directory for the persistent database
-RUN mkdir -p /data && chown nobody:nogroup /data
+RUN mkdir -p /data
 
 # Tell the bot to store the SQLite file inside /data
 ENV DB_PATH=/data/bot_data.sqlite
-
-# Run as non‑root user
-USER nobody
 
 # Declare volume for persistence
 VOLUME ["/data"]

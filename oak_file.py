@@ -5,10 +5,7 @@ import os
 
 from oak_build import task
 
-
 IMAGE_NAME = "weekend-game-poll-tg-bot"
-ENV_TOKEN_VAR = "TELEGRAM_BOT_TOKEN"
-
 BUILD_DIR = Path("./build")
 
 
@@ -19,14 +16,17 @@ def build_docker():
 
 @task(depends_on=[build_docker])
 def run_docker():
-    token = os.getenv(ENV_TOKEN_VAR)
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    if not token:
+        raise Exception("Please set the environment variable TELEGRAM_BOT_TOKEN")
     data_dir = Path(".").absolute() / "data"
     run(
         [
             "docker",
             "run",
-            "-e", f"{ENV_TOKEN_VAR}={token}",
-            "-v", f"{data_dir}:/app/data",
+            "-e", f"TELEGRAM_BOT_TOKEN={token}",
+            "-e", f"DB_PATH=/data/bot_data.sqlite",
+            "-v", f"{data_dir}:/data",
             IMAGE_NAME,
         ],
         check=True

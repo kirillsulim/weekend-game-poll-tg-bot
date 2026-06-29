@@ -5,6 +5,9 @@ from datetime import date, time, timedelta, timezone
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
+import calendar
+from typing import Optional
+
 # --------------------------------------------
 # Configuration
 # --------------------------------------------
@@ -22,6 +25,16 @@ WEEKDAYS_RU = {
     4: "Пятница",
     5: "Суббота",
     6: "Воскресенье",
+}
+
+SHORT_WEEKDAYS_RU = {
+    "пн": 0,
+    "вт": 1,
+    "ср": 2,
+    "чт": 3,
+    "пт": 4,
+    "сб": 5,
+    "вс": 6,
 }
 
 SCHEDULE_TEST_MODE = os.environ.get("SCHEDULE_TEST_MODE")
@@ -57,6 +70,79 @@ def get_all_weekly_chats() -> list[int]:
     rows = conn.execute("SELECT chat_id FROM weekly_polls").fetchall()
     conn.close()
     return [row[0] for row in rows]
+
+
+def parse_smart_date(text: str) -> Optional[date]:
+    """
+    Parse a single argument into a date using these rules (in order):
+    1. YYYY-MM-DD → exact date
+    2. Short Russian weekday (ПН, ВТ, ...) → next occurrence (today included)
+    3. Number (day of month) → nearest future date with that day
+    4. Month-day (MM-DD) → nearest future date with that month and day
+    Returns None if unparseable.
+    """
+    today = date.today()
+    text = text.strip().lower()
+
+    # 1. Try YYYY-MM-DD
+    try:
+        return date.fromisoformat(text)
+    except (ValueError, TypeError):
+        pass
+
+    # 2. Short weekday
+    if text in SHORT_WEEKDAYS_RU:
+        target_weekday = SHORT_WEEKDAYS_RU[text]
+        days_ahead = (target_weekday - today.weekday()) % 7
+        return today + timedelta(days=days_ahead)
+
+    # 3. Day of month number
+    if text.isdigit():
+        day = int(text)
+        if 1 <= day <= 31:
+            year, month = today.year, today.month
+            # Try this month
+            _, max_day = calendar.monthrange(year, month)
+            if day <= max_day:
+                candidate = date(year, month, day)
+                if candidate >= today:
+                    return candidate
+            # Move to next month(s)
+            for _ in range(12):  # max 12 months to try
+                if month == 12:
+                    month = 1
+                    year += 1
+                else:
+                    month += 1
+                _, max_day = calendar.monthrange(year, month)
+                # Use min(day, max_day) to handle months with fewer days
+                actual_day = min(day, max_day)
+                candidate = date(year, month, actual_day)
+                if candidate >= today:
+                    return candidate
+            return None  # Should never happen
+
+    # 4. Month-day (MM-DD)
+    if "-" in text:
+        parts = text.split("-")
+        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+            month_num = int(parts[0])
+            day_num = int(parts[1])
+            if 1 <= month_num <= 12 and 1 <= day_num <= 31:
+                # Try current year first
+                try:
+                    candidate = date(today.year, month_num, day_num)
+                    if candidate >= today:
+                        return candidate
+                except ValueError:
+                    pass
+                # Try next year
+                try:
+                    return date(today.year + 1, month_num, day_num)
+                except ValueError:
+                    pass
+
+    return None
 
 # --------------------------------------------
 # Helper: upcoming Saturday & Sunday
@@ -160,20 +246,26 @@ async def poll_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     args = context.args
 
-    # ---- Determine the dates ----
     if not args:
+        # Default: next three days
         today = date.today()
         dates = [today + timedelta(days=i) for i in range(3)]
     else:
-        try:
-            dates = [date.fromisoformat(arg) for arg in args]
-        except ValueError:
-            await update.message.reply_text(
-                "⚠️ Неверный формат даты. Используйте ГГГГ-ММ-ДД (например, 2026-07-04)."
-            )
-            return
+        dates = []
+        for arg in args:
+            parsed = parse_smart_date(arg)
+            if parsed:
+                dates.append(parsed)
+            else:
+                await update.message.reply_text(
+                    f"⚠️ Не удалось распознать дату: «{arg}». "
+                    "Используйте ГГГГ-ММ-ДД, день недели (ПН, ВТ, СР, ЧТ, ПТ, СБ, ВС), число (день месяца) или ММ-ДД."
+                )
+                return  # Stop to avoid a poll with missing dates
 
-    # ---- Build poll options (same format as weekly poll) ----
+    # Sort and remove duplicates (keep unique dates, ascending)
+    dates = sorted(set(dates))
+
     options = build_poll_options(dates)
     question = "Играем?"
     await context.bot.send_poll(
@@ -218,22 +310,41 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Привет! Я бот для организации настольных игр.\n\n"
         "Я помогаю группе выбрать удобную дату с помощью голосования.\n\n"
-        "Доступные команды:\n"
-        "/poll – создать опрос (3 ближайших дня или свои даты)\n"
-        "/enable_weekly – включить еженедельный опрос (Пн, 12:00 UTC+5)\n"
-        "/disable_weekly – выключить еженедельный опрос\n"
-        "/help – показать это сообщение\n\n"
-        "Добавьте меня в группу и используйте команды!"
+        "📋 *Команды:*\n"
+        "`/poll` – опрос на три ближайших дня\n"
+        "`/poll <даты>` – опрос с конкретными датами\n"
+        "`/enable_weekly` – включить еженедельный опрос (пн, 12:00 UTC+5) на выходные\n"
+        "`/disable_weekly` – выключить еженедельный опрос\n"
+        "`/help` – показать подсказку\n\n"
+        "📅 *Форматы дат для /poll:*\n"
+        "• День недели: `ПН`, `ВТ`, `СР`, `ЧТ`, `ПТ`, `СБ`, `ВС`\n"
+        "• Число месяца: `5`, `15`, `28`\n"
+        "• Месяц‑день: `7-14` (14 июля), `12-31` (31 декабря)\n"
+        "• Год‑месяц‑день: `2026-07-04`\n\n"
+        "Примеры:\n"
+        "`/poll ПТ СБ ВС` – ближайшие пятница, суббота, воскресенье\n"
+        "`/poll 15 20` – ближайшие 15‑е и 20‑е число\n"
+        "`/poll 7-14 12-31` – 14 июля и 31 декабря\n"
+        "`/poll` (без аргументов) – сегодня, завтра, послезавтра\n\n"
+        "Все опросы содержат вариант «Пас», если кто-то не может прийти.",
+        parse_mode="Markdown"
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "ℹ️ *Как использовать бота*\n\n"
-        "/poll – опрос на три ближайших дня\n"
-        "/poll 2026-07-04 2026-07-11 – опрос с конкретными датами\n"
-        "/enable_weekly – автоматический опрос каждый понедельник\n"
-        "/disable_weekly – отключить автоматический опрос\n\n"
-        "Опросы не анонимные, можно выбрать несколько вариантов.",
+        "ℹ️ *Справка по командам*\n\n"
+        "`/poll` – опрос на три ближайших дня\n"
+        "`/poll <даты>` – опрос с конкретными датами\n\n"
+        "Форматы дат:\n"
+        "• Краткий день недели: `ПН`, `ВТ`, `СР`, `ЧТ`, `ПТ`, `СБ`, `ВС`\n"
+        "• Число: `5`, `15` (день месяца)\n"
+        "• Месяц‑день: `7-14` (14 июля)\n"
+        "• Год‑месяц‑день: `2026-07-04`\n\n"
+        "Несколько дат можно указывать через пробел.\n\n"
+        "`/enable_weekly` – автоопрос каждую неделю (пн, 12:00 UTC+5) на выходные\n"
+        "`/disable_weekly` – отключить автоопрос\n\n"
+        "Во всех опросах есть опция «Пас» – можно указать, что вы не придёте.",
+        parse_mode="Markdown"
     )
 
 # --------------------------------------------

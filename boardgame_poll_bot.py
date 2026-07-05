@@ -3,10 +3,10 @@ import sqlite3
 from datetime import date, time, timedelta, timezone
 
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, ContextTypes, JobQueue, CallbackContext
 
 import calendar
-from typing import Optional
+from typing import Optional, Any
 
 # --------------------------------------------
 # Configuration
@@ -36,6 +36,15 @@ SHORT_WEEKDAYS_RU = {
     "сб": 5,
     "вс": 6,
 }
+
+class JobQueueWeekdays:
+    SUNDAY = 0
+    MONDAY = 1
+    TUESDAY = 2
+    WEDNESDAY = 3
+    THURSDAY = 4
+    FRIDAY = 5
+    SATURDAY = 6
 
 SCHEDULE_TEST_MODE = os.environ.get("SCHEDULE_TEST_MODE")
 
@@ -201,24 +210,7 @@ async def enable_weekly(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Еженедельный опрос уже включен для этого чата.")
             return
 
-    if not SCHEDULE_TEST_MODE:
-    # Schedule the job (Monday 12:00 UTC)
-        context.job_queue.run_daily(
-            callback=send_weekly_poll,
-            time=get_poll_time(),
-            days=(0,),
-            chat_id=chat_id,
-            name=f"weekly_poll_{chat_id}",
-        )
-    else:
-        # Schedule the job (every 60 seconds for testing)
-        context.job_queue.run_repeating(
-            callback=send_weekly_poll,
-            interval=60,  # seconds
-            first=1,  # wait 1 sec before first run
-            chat_id=chat_id,
-            name=f"weekly_poll_{chat_id}",
-        )
+    await schedule_poll(context.job_queue, chat_id)
 
     # Persist to database
     save_weekly_chat(chat_id)
@@ -283,25 +275,31 @@ async def restore_weekly_jobs(application: Application):
     """Called after the application is built, before polling starts."""
     chat_ids = get_all_weekly_chats()
     for chat_id in chat_ids:
-        if not SCHEDULE_TEST_MODE:
-            # Avoid duplicates if a job was already added (shouldn’t happen)
-            application.job_queue.run_daily(
-                callback=send_weekly_poll,
-                time=get_poll_time(),
-                days=(0,),
-                chat_id=chat_id,
-                name=f"weekly_poll_{chat_id}",
-            )
-        else:
-            application.job_queue.run_repeating(
-                callback=send_weekly_poll,
-                interval=60,
-                first=1,
-                chat_id=chat_id,
-                name=f"weekly_poll_{chat_id}",
-            )
+        await schedule_poll(application.job_queue, chat_id)
     if chat_ids:
         print(f"Restored weekly polls for {len(chat_ids)} chat(s).")
+
+
+async def schedule_poll(queue, chat_id: int):
+    job_id = f"weekly_poll_{chat_id}"
+    if not SCHEDULE_TEST_MODE:
+        # Avoid duplicates if a job was already added (shouldn’t happen)
+        queue.run_daily(
+            callback=send_weekly_poll,
+            time=get_poll_time(),
+            days=(JobQueueWeekdays.MONDAY,),
+            chat_id=chat_id,
+            name=job_id,
+        )
+    else:
+        queue.run_repeating(
+            callback=send_weekly_poll,
+            interval=60,
+            first=1,
+            chat_id=chat_id,
+            name=job_id,
+        )
+
 
 def get_poll_time() -> time:
     return time(hour=12, minute=0, tzinfo=timezone(timedelta(hours=5)))
